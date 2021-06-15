@@ -1,1 +1,1 @@
-# Opt_sampling_design_based
+# Optimal sampling for design-based estimators of regression models
