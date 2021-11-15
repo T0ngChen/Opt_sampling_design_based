@@ -98,6 +98,27 @@ impute.raking = function(data){
   list(svyest_ipw, svyest_rak)
 }
 
+
+
+impute.raking.srs = function(data){
+  twophase.w2 <- twophase(id = list(~1, ~1), strata = list(NULL, NULL), 
+                          subset = ~insample, data = data)
+  svyest_ipw = svyglm(Y ~ X + Z, family = quasibinomial, design = twophase.w2)
+  impmodel <- svyglm(X ~ X_tilde + Z, design = twophase.w2)
+  data$imputex <- as.vector(predict(impmodel, newdata=data, type="response", se.fit=FALSE))
+  phase1model_imp <- glm(Y ~ imputex + Z, family = binomial, data=data)
+  inffun_imp <- inf.fun(phase1model_imp)
+  colnames(inffun_imp)<-paste0("if",1:ncol(inffun_imp))
+  twophase.w2.imp <- twophase(id=list(~1,~1),  strata = list(NULL, NULL), 
+                              subset = ~insample, data = cbind(data, inffun_imp), method="simple")
+  calformula <- make.formula(colnames(inffun_imp)) 
+  cal_twophase_imp <- calibrate(twophase.w2.imp, calformula, phase=2, calfun = "raking")
+  svyest_rak<-svyglm(Y ~ X + Z, family = quasibinomial, design=cal_twophase_imp)
+  list(svyest_ipw, svyest_rak)
+}
+
+
+
 pps.prob = function(n1 = n1, w1.n = n){
   if(any(n1/sum(n1) * w1.n < 3)){
     prob = n1/sum(n1)
@@ -110,7 +131,19 @@ pps.prob = function(n1 = n1, w1.n = n){
 }
 
 
+fix.size = function(design, n1){
+  index = which(design > n1)
+  difference = design[index] - n1[index]
+  design[index] = n1[index]
+  
+  index1 = which.max(n1-design)
+  design[index1] = design[index1] + difference
+  design
+}
+
+
 one.sim<-function(beta, N = 4000, n = 600, err){
+  
   ## generate data
   df <- data.frame(Z = rbinom(N, 1, .5))
   df$X <- rnorm(N, 0, 1)
@@ -143,6 +176,9 @@ one.sim<-function(beta, N = 4000, n = 600, err){
   }
   ney = integer.neyman.w1(n.strata = length(strata), NS = n1 * sd.stra1, sample.size = n, upper = n1)
   
+  if(any(ney > n1)){
+    ney = fix.size(ney, n1)
+  }
   
   ## sampling and calibration
   df0 = df
@@ -194,6 +230,11 @@ one.sim<-function(beta, N = 4000, n = 600, err){
   }
   optimal.rak = integer.neyman.w1(n.strata = length(strata), NS = n1 * sd.stra2, sample.size = n, upper = n1)
   
+  if(any(optimal.rak > n1)){
+    optimal.rak = fix.size(optimal.rak, n1)
+  }
+  
+  
   ## sampling and calibration
   s.rak = list()
   for(i in 1:length(strata)){
@@ -212,7 +253,7 @@ one.sim<-function(beta, N = 4000, n = 600, err){
   df2 = df
   s.srs = sample(1:nrow(df2), n)
   df2$insample = (1:nrow(df2)) %in% s.srs
-  SRS = impute.raking(df2)
+  SRS = impute.raking.srs(df2)
   ipw.SRS = SRS[[1]]
   rak.SRS = SRS[[2]]
   
@@ -222,9 +263,16 @@ one.sim<-function(beta, N = 4000, n = 600, err){
   ##          ##
   ##############
   df3 = df
+  
+  bss.sample.size = rep(round(n/length(strata)), length(strata))
+  
+  if(any(bss.sample.size > n1)){
+    bss.sample.size = fix.size(bss.sample.size, n1)
+  }
+  
   s.bss = list()
   for(i in 1:length(strata)){
-    s.bss[[i]] = sample(strata[[i]], n/length(strata))
+    s.bss[[i]] = sample(strata[[i]], bss.sample.size[i])
   }
   
   df3$insample = (1:nrow(df3)) %in% unlist(s.bss)
@@ -240,6 +288,11 @@ one.sim<-function(beta, N = 4000, n = 600, err){
   df4 = df
   s.pss = list()
   pps.num = round(600 * pps.prob(n1 = n1, w1.n = 600))
+  
+  if(any(pps.num > n1)){
+    pps.num = fix.size(pps.num, n1)
+  }
+  
   for(i in 1:length(strata)){
     s.pss[[i]] = sample(strata[[i]], pps.num[i])
   }
@@ -249,24 +302,47 @@ one.sim<-function(beta, N = 4000, n = 600, err){
   ipw.PSS = PSS[[1]]
   rak.PSS = PSS[[2]]
   
+  ####################################
+  ##                                ##
+  ##  phase-two data only with SRS  ##
+  ##                                ##
+  ####################################
+  df5 = df2[df2$insample,]
+  ph.two.srs = glm(Y ~ X + Z, data = df5, family = binomial)
   
   
   
   coef.ipw = c((coef(ipw.SRS) - beta)[2], (coef(ipw.BSS) - beta)[2], 
                (coef(ipw.PSS) - beta)[2], (coef(ipw.IFIPW) - beta)[2],
-               (coef(ipw.IFGR) - beta)[2])
+               (coef(ipw.IFGR) - beta)[2], (coef(ph.two.srs) - beta)[2])
   
   coef.rak = c((coef(rak.SRS) - beta)[2], (coef(rak.BSS) - beta)[2], 
                (coef(rak.PSS) - beta)[2], (coef(rak.IFIPW) - beta)[2],
-               (coef(rak.IFGR) - beta)[2])
+               (coef(rak.IFGR) - beta)[2], (coef(ph.two.srs) - beta)[2])
+  
+  sd.ipw = c(summary(ipw.SRS)$coefficients[2,2],
+             summary(ipw.BSS)$coefficients[2,2],
+             summary(ipw.PSS)$coefficients[2,2],
+             summary(ipw.IFIPW)$coefficients[2,2],
+             summary(ipw.IFGR)$coefficients[2,2],
+             summary(ph.two.srs)$coefficients[2,2])
+  
+  sd.rak = c(summary(rak.SRS)$coefficients[2,2],
+             summary(rak.BSS)$coefficients[2,2],
+             summary(rak.PSS)$coefficients[2,2],
+             summary(rak.IFIPW)$coefficients[2,2],
+             summary(rak.IFGR)$coefficients[2,2],
+             summary(ph.two.srs)$coefficients[2,2])
   
   
   sample.size = cbind(ney, optimal.rak)
-  names(coef.ipw) = names(coef.rak) = c("SRS", "BSS", "PSS", "IF-IPW", "IF-GR")
+  names(coef.ipw) = names(coef.rak) = names(sd.ipw) = names(sd.rak) = c("SRS", "BSS", "PSS", "IFIPW", "IFGR", "phase.2")
   
   
   list(coef.ipw = coef.ipw, coef.rak = coef.rak,
+       sd.rak = sd.rak, sd.ipw = sd.ipw,
        sample.size = sample.size)
+  
 }
 
 

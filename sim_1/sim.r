@@ -28,6 +28,17 @@ impute.raking = function(data){
   list(svyest_ipw, svyest_rak)
 }
 
+## raking by single imputation for SRS
+impute.raking.srs = function(data){
+  twophase.w2.imp <- twophase(id=list(~1,~1),  strata = list(NULL, NULL),
+                              subset = ~insample, data = data, method="simple")
+  svyest_ipw = svyglm(Y ~ X + Z, design = twophase.w2.imp)
+  calformula <- make.formula("X_tilde")
+  cal_twophase_imp <- calibrate(twophase.w2.imp, calformula, phase=2, calfun = "raking")
+  svyest_rak <- svyglm(Y ~ X + Z, design=cal_twophase_imp)
+  list(svyest_ipw, svyest_rak)
+}
+
 
 ## take from https://stats.stackexchange.com/questions/15011/generate-a-random-variable-with-a-defined-correlation-to-an-existing-variables
 generateR <- function(y, rho) {
@@ -110,9 +121,9 @@ one.sim = function(beta, N = 4000, n = 600, r){
   df2 = df
   s.srs = sample(1:nrow(df2), n)
   df2$insample = (1:nrow(df2)) %in% s.srs
-  ipw.SRS = impute.raking(df2)[[1]]
-  rak.SRS = impute.raking(df2)[[2]]
-
+  ipw.SRS = impute.raking.srs(df2)[[1]]
+  rak.SRS = impute.raking.srs(df2)[[2]]
+  
   ##############
   ##          ##
   ##   BSS    ##
@@ -143,22 +154,44 @@ one.sim = function(beta, N = 4000, n = 600, r){
   ipw.PSS = impute.raking(df4)[[1]]
   rak.PSS = impute.raking(df4)[[2]]
   
+  ####################################
+  ##                                ##
+  ##  phase-two data only with SRS  ##
+  ##                                ##
+  ####################################
+  df5 = df2[df2$insample,]
+  ph.two.srs = lm(Y~X+Z, data = df5)
   
   
   coef.ipw = c((coef(ipw.SRS) - beta)[2], (coef(ipw.BSS) - beta)[2], 
                (coef(ipw.PSS) - beta)[2], (coef(ipw.IFIPW) - beta)[2],
-               (coef(ipw.IFGR) - beta)[2])
+               (coef(ipw.IFGR) - beta)[2], (coef(ph.two.srs) - beta)[2])
   
   coef.rak = c((coef(rak.SRS) - beta)[2], (coef(rak.BSS) - beta)[2], 
                (coef(rak.PSS) - beta)[2], (coef(rak.IFIPW) - beta)[2],
-               (coef(rak.IFGR) - beta)[2])
+               (coef(rak.IFGR) - beta)[2], (coef(ph.two.srs) - beta)[2])
   
+  
+  sd.ipw = c(summary(ipw.SRS)$coefficients[2,2],
+             summary(ipw.BSS)$coefficients[2,2],
+             summary(ipw.PSS)$coefficients[2,2],
+             summary(ipw.IFIPW)$coefficients[2,2],
+             summary(ipw.IFGR)$coefficients[2,2],
+             summary(ph.two.srs)$coefficients[2,2])
+  
+  sd.rak = c(summary(rak.SRS)$coefficients[2,2],
+             summary(rak.BSS)$coefficients[2,2],
+             summary(rak.PSS)$coefficients[2,2],
+             summary(rak.IFIPW)$coefficients[2,2],
+             summary(rak.IFGR)$coefficients[2,2],
+             summary(ph.two.srs)$coefficients[2,2])
   
   sample.size = cbind(ney, optimal.rak)
-  names(coef.ipw) = names(coef.rak) = c("SRS", "BSS", "PSS", "IFIPW", "IFGR")
+  names(coef.ipw) = names(coef.rak) = names(sd.ipw) = names(sd.rak) = c("SRS", "BSS", "PSS", "IFIPW", "IFGR", "phase.2")
   
   
   list(coef.ipw = coef.ipw, coef.rak = coef.rak,
+       sd.rak = sd.rak, sd.ipw = sd.ipw,
        sample.size = sample.size)
 }
 

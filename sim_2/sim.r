@@ -87,6 +87,27 @@ impute.raking = function(data){
   list(svyest_ipw, svyest_rak)
 }
 
+
+impute.raking.srs = function(data){
+  twophase.w2 <- twophase(id = list(~1, ~1), strata = list(NULL, NULL), 
+                          subset = ~insample, data = data)
+  svyest_ipw = svyglm(Y ~ X + Z1 + Z2, design = twophase.w2)
+  impmodel <- svyglm(X ~ X_tilde + Z1 + Z2, design = twophase.w2)
+  data$imputex <- as.vector(predict(impmodel, newdata=data, type="response", se.fit=FALSE))
+  phase1model_imp <- lm(Y ~ imputex + Z1 + Z2, data=data)
+  inffun_imp <- dfbeta(phase1model_imp)
+  colnames(inffun_imp)<-paste0("if",1:ncol(inffun_imp))
+  twophase.w2.imp <- twophase(id=list(~1,~1),  strata = list(NULL, NULL), 
+                              subset = ~insample, data = cbind(data, inffun_imp), method="simple")
+  calformula <- make.formula(colnames(inffun_imp)) 
+  cal_twophase_imp <- calibrate(twophase.w2.imp, calformula, phase=2, calfun = "raking")
+  svyest_rak<-svyglm(Y ~ X + Z1 + Z2, design=cal_twophase_imp)
+  list(svyest_ipw, svyest_rak)
+}
+
+
+
+
 pps.prob = function(n1 = n1, w1.n = n){
   if(any(n1/sum(n1) * w1.n < 3)){
     prob = n1/sum(n1)
@@ -164,7 +185,7 @@ one.sim<-function(beta, N = 4000, n = 600, err){
   imp = mice(df1, meth = meth, pred = ini$predictorMatrix, print = F, m = M,
              where = mip)
   inffun_mi = matrix(0, nrow = N, ncol = 4)
-
+  
   for(i in 1:M){
     phase1model.imp <- lm(Y~X+Z1+Z2, data=complete(imp, i))
     inffun_mi <- inffun_mi+dfbeta(phase1model.imp)
@@ -199,7 +220,7 @@ one.sim<-function(beta, N = 4000, n = 600, err){
   df2 = df
   s.srs = sample(1:nrow(df2), n)
   df2$insample = (1:nrow(df2)) %in% s.srs
-  SRS = impute.raking(df2)
+  SRS = impute.raking.srs(df2)
   ipw.SRS = SRS[[1]]
   rak.SRS = SRS[[2]]
   
@@ -236,21 +257,45 @@ one.sim<-function(beta, N = 4000, n = 600, err){
   ipw.PSS = PSS[[1]]
   rak.PSS = PSS[[2]]
   
+  ####################################
+  ##                                ##
+  ##  phase-two data only with SRS  ##
+  ##                                ##
+  ####################################
+  df5 = df2[df2$insample,]
+  ph.two.srs = lm(Y ~ X + Z1 + Z2, data = df5)
+  
+  
   
   coef.ipw = c((coef(ipw.SRS) - beta)[2], (coef(ipw.BSS) - beta)[2], 
                (coef(ipw.PSS) - beta)[2], (coef(ipw.IFIPW) - beta)[2],
-               (coef(ipw.IFGR) - beta)[2])
+               (coef(ipw.IFGR) - beta)[2], (coef(ph.two.srs) - beta)[2])
   
   coef.rak = c((coef(rak.SRS) - beta)[2], (coef(rak.BSS) - beta)[2], 
                (coef(rak.PSS) - beta)[2], (coef(rak.IFIPW) - beta)[2],
-               (coef(rak.IFGR) - beta)[2])
+               (coef(rak.IFGR) - beta)[2], (coef(ph.two.srs) - beta)[2])
+  
+  sd.ipw = c(summary(ipw.SRS)$coefficients[2,2],
+             summary(ipw.BSS)$coefficients[2,2],
+             summary(ipw.PSS)$coefficients[2,2],
+             summary(ipw.IFIPW)$coefficients[2,2],
+             summary(ipw.IFGR)$coefficients[2,2],
+             summary(ph.two.srs)$coefficients[2,2])
+  
+  sd.rak = c(summary(rak.SRS)$coefficients[2,2],
+             summary(rak.BSS)$coefficients[2,2],
+             summary(rak.PSS)$coefficients[2,2],
+             summary(rak.IFIPW)$coefficients[2,2],
+             summary(rak.IFGR)$coefficients[2,2],
+             summary(ph.two.srs)$coefficients[2,2])
   
   
   sample.size = cbind(ney, optimal.rak)
-  names(coef.ipw) = names(coef.rak) = c("SRS", "BSS", "PSS", "IF-IPW", "IF-GR")
+  names(coef.ipw) = names(coef.rak) = names(sd.ipw) = names(sd.rak) = c("SRS", "BSS", "PSS", "IFIPW", "IFGR", "phase.2")
   
   
   list(coef.ipw = coef.ipw, coef.rak = coef.rak,
+       sd.rak = sd.rak, sd.ipw = sd.ipw,
        sample.size = sample.size)
 }
 

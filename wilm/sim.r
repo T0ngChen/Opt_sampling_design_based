@@ -92,6 +92,24 @@ impute.raking = function(data){
 }
 
 
+
+impute.raking.srs = function(data){
+  twophase.w2 <- twophase(id = list(~1, ~1), strata = list(NULL, NULL), 
+                          subset = ~insample, data = data)
+  svyest_ipw = svyglm(relaps~histol+age1+age2+stage1*tumdiam, family=quasibinomial, design=twophase.w2)
+  impmodel <- svyglm(histol~instit+age3+study*stage2,family=quasibinomial,design=twophase.w2)
+  data$imputex <- as.vector(predict(impmodel,newdata=data,type="response",se.fit=FALSE))
+  phase1model_imp <- glm(relaps~imputex+age1+age2+stage1*tumdiam, family=binomial, data=data)
+  inffun_imp <- inf.fun(phase1model_imp)
+  colnames(inffun_imp)<-paste0("if",1:ncol(inffun_imp))
+  twophase.w2.imp <- twophase(id=list(~1,~1),  strata = list(NULL, NULL), 
+                              subset = ~insample, data = cbind(data, inffun_imp), method="simple")
+  calformula <- make.formula(colnames(inffun_imp)) 
+  cal_twophase_imp <- calibrate(twophase.w2.imp, calformula, phase=2, calfun = "raking", force = T)
+  svyest_rak<-svyglm(relaps~histol+age1+age2+stage1*tumdiam, family=quasibinomial, design=cal_twophase_imp)
+  list(svyest_ipw, svyest_rak)
+}
+
 ## simulation
 nwts <- read.table("nwts-share.txt", header=TRUE)
 nwts$age1 <- with(nwts, pmin(age, 1))
@@ -190,7 +208,7 @@ one.sim = function(){
   rak.IFGR = IFGR[[2]]
   
   
-
+  
   
   ###############
   ##           ##  
@@ -201,15 +219,15 @@ one.sim = function(){
   s.srs = sample(1:nrow(df2), n)
   df2$insample = (1:nrow(df2)) %in% s.srs
   nsrs = xtabs(~df2$stra[df2$insample == 1]) 
-  SRS = impute.raking(df2)
+  SRS = impute.raking.srs(df2)
   ipw.SRS = SRS[[1]]
   rak.SRS = SRS[[2]]
   
   
-
   
   
-
+  
+  
   
   ##############
   ##          ##
@@ -247,6 +265,14 @@ one.sim = function(){
   rak.SCC = SCC[[2]]
   
   
+  ####################################
+  ##                                ##
+  ##  phase-two data only with SRS  ##
+  ##                                ##
+  ####################################
+  df6 = df2[df2$insample,]
+  ph.two.srs = glm(relaps~histol+age1+age2+stage1*tumdiam, data = df6, family = binomial)
+  
   
   
   
@@ -254,22 +280,39 @@ one.sim = function(){
                (coef(ipw.SCC) - beta)[2],
                (coef(ipw.PSS) - beta)[2], 
                (coef(ipw.IFIPW) - beta)[2],
-               (coef(ipw.IFGR) - beta)[2])
+               (coef(ipw.IFGR) - beta)[2],
+               (coef(ph.two.srs) - beta)[2])
   
   coef.rak = c((coef(rak.SRS) - beta)[2], 
                (coef(rak.SCC) - beta)[2],
                (coef(rak.PSS) - beta)[2], 
                (coef(rak.IFIPW) - beta)[2],
-               (coef(rak.IFGR) - beta)[2])
+               (coef(rak.IFGR) - beta)[2],
+               (coef(ph.two.srs) - beta)[2])
+  
+  sd.ipw = c(summary(ipw.SRS)$coefficients[2,2],
+             summary(ipw.SCC)$coefficients[2,2],
+             summary(ipw.PSS)$coefficients[2,2],
+             summary(ipw.IFIPW)$coefficients[2,2],
+             summary(ipw.IFGR)$coefficients[2,2],
+             summary(ph.two.srs)$coefficients[2,2])
+  
+  sd.rak = c(summary(rak.SRS)$coefficients[2,2],
+             summary(rak.SCC)$coefficients[2,2],
+             summary(rak.PSS)$coefficients[2,2],
+             summary(rak.IFIPW)$coefficients[2,2],
+             summary(rak.IFGR)$coefficients[2,2],
+             summary(ph.two.srs)$coefficients[2,2])
   
   
   sample.size = cbind(ney, optimal.rak, nsrs)
-  names(coef.ipw) = names(coef.rak) = c("SRS", "SCC", "PSS", "IF-IPW", "IF-GR")
+  names(coef.ipw) = names(coef.rak) = names(sd.ipw) = names(sd.rak) = c("SRS", "SCC", "PSS", "IF-IPW", "IF-GR", "phase.2")
   
   
-
+  
   
   list(coef.ipw = coef.ipw, coef.rak = coef.rak,
+       sd.rak = sd.rak, sd.ipw = sd.ipw,
        sample.size = sample.size)
   
 }
